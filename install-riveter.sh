@@ -12,13 +12,10 @@ exec > >(tee "$LOG_FILE") 2>&1
 echo "Starting installation process for Riveter..."
 date
 
-# Load Anaconda module
-echo "Loading Anaconda module..."
-if module avail 2>&1 | grep -q "anaconda3/2024.02-1-11.4"; then
-    module load anaconda3/2024.02-1-11.4 || { echo "Failed to load Anaconda module"; exit 1; }
-else
-    echo "Anaconda module not found. Ensure it is installed and available."; exit 1;
-fi
+# Load required modules
+echo "Loading required modules..."
+module load anaconda3/2024.02-1-11.4 || { echo "Failed to load Anaconda module"; exit 1; }
+module load python || { echo "Failed to load Python module"; exit 1; }
 
 # Remove existing Conda environment if it exists
 if conda info --envs | grep -q "$ENV_NAME"; then
@@ -28,7 +25,7 @@ fi
 
 # Create a new Conda environment
 echo "Creating Conda environment '$ENV_NAME'..."
-conda create -y -n "$ENV_NAME" python=3.8 || { echo "Failed to create Conda environment"; exit 1; }
+conda create -y -n "$ENV_NAME" || { echo "Failed to create Conda environment"; exit 1; }
 
 # Activate the Conda environment
 echo "Activating Conda environment '$ENV_NAME'..."
@@ -37,13 +34,18 @@ source activate "$ENV_NAME" || { echo "Failed to activate Conda environment"; ex
 # Add conda-forge channel and install dependencies
 echo "Adding conda-forge channel and installing dependencies..."
 conda config --add channels conda-forge
-conda install -y spacy=2.3 pandas tqdm seaborn || { echo "Failed to install dependencies"; exit 1; }
+conda install -y spacy pandas tqdm seaborn || { echo "Failed to install dependencies"; exit 1; }
 
-# Install neuralcoref from conda-forge
-echo "Installing neuralcoref..."
-conda install -y neuralcoref -c conda-forge || { echo "Failed to install neuralcoref"; exit 1; }
+# Use Mamba if available to speed up installations
+if conda install -y mamba -c conda-forge; then
+    echo "Mamba installed successfully. Using Mamba for faster installations..."
+    mamba install -y neuralcoref || { echo "Failed to install neuralcoref"; exit 1; }
+else
+    echo "Mamba installation failed. Falling back to Conda for package installation..."
+    conda install -y neuralcoref || { echo "Failed to install neuralcoref"; exit 1; }
+fi
 
-# Download SpaCy model compatible with SpaCy 2.x
+# Download SpaCy model
 echo "Downloading SpaCy model..."
 python -m spacy download en_core_web_sm || { echo "Failed to download SpaCy model"; exit 1; }
 
@@ -51,32 +53,10 @@ python -m spacy download en_core_web_sm || { echo "Failed to download SpaCy mode
 if [ ! -d "$REPO_DIR" ]; then
     echo "Cloning Riveter repository..."
     git clone "$REPO_URL" || { echo "Failed to clone Riveter repository"; exit 1; }
-    echo "Cloned Riveter repository."
-fi
-cd "$REPO_DIR" || { echo "Failed to access Riveter repository"; exit 1; }
-pip install . || { echo "Failed to install Riveter"; exit 1; }
-
-# Create test script if not already present
-if [ ! -f "../$TEST_SCRIPT" ]; then
-    cat <<EOF > "../$TEST_SCRIPT"
-import spacy
-
-try:
-    import neuralcoref
-    nlp = spacy.load("en_core_web_sm")
-    neuralcoref.add_to_pipe(nlp)
-    doc = nlp("My sister has a dog. She loves him.")
-    print("Coreferences:", doc._.coref_clusters)
-except Exception as e:
-    print(f"Test script error: {e}")
-    raise
-EOF
-    echo "Test script created."
 fi
 
 # Run test script
-cd ..
+echo "Running test script..."
 python "$TEST_SCRIPT" || { echo "Test script failed"; exit 1; }
-echo "Test script executed successfully."
 
 echo "Installation process completed successfully."
