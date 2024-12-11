@@ -1,83 +1,72 @@
 #!/bin/bash
 
-# Set up environment variables
-VENV_DIR="riveter_env"
+# Variables
+ENV_NAME="riveter_env"
 REPO_URL="https://github.com/maartensap/riveter-nlp.git"
 REPO_DIR="riveter-nlp"
 LOG_FILE="install_riveter.log"
+TEST_SCRIPT="test_riveter.py"
 
-# Redirect stdout and stderr to log file
-exec > >(tee -a $LOG_FILE) 2>&1
-
+# Redirect output to log file
+exec > >(tee "$LOG_FILE") 2>&1
 echo "Starting installation process for Riveter..."
 date
 
-# Load necessary modules
-module spider python | grep "python/" || echo "No Python modules available"
-module load python/3.10.12-gcc-11.4.0 || echo "Using system Python instead"
+# Load Anaconda
+module load anaconda3/2024.02-1-11.4 || { echo "Failed to load Anaconda module"; exit 1; }
 
-# Check Python version
-if ! command -v python3 &> /dev/null; then
-    echo "Python3 is not available. Please install Python3."
-    exit 1
+# Create and activate Conda environment
+if ! conda info --envs | grep -q "$ENV_NAME"; then
+    conda create -y -n "$ENV_NAME" python=3.10
+    echo "Conda environment '$ENV_NAME' created."
 fi
+source activate "$ENV_NAME" || { echo "Failed to activate Conda environment"; exit 1; }
 
-# Create and activate a virtual environment
-if [ ! -d "$VENV_DIR" ]; then
-    python3 -m venv $VENV_DIR
-    echo "Virtual environment created at $VENV_DIR"
-fi
+# Install dependencies using Conda
+conda install -y pandas tqdm seaborn spacy=3.7 -c conda-forge || { echo "Conda dependency installation failed"; exit 1; }
 
-source $VENV_DIR/bin/activate
+# Install spacy_experimental (using pip since not available on Conda)
+pip install spacy_experimental || { echo "Failed to install spacy_experimental"; exit 1; }
 
-# Upgrade pip
-pip install --upgrade pip
+# Install neuralcoref (requires compatibility fixes)
+pip install git+https://github.com/huggingface/neuralcoref.git || { echo "Failed to install neuralcoref"; exit 1; }
 
-# Install essential dependencies
-pip install pandas spacy tqdm seaborn spacy_experimental
+# Download SpaCy model
+python -m spacy download en_core_web_sm || { echo "Failed to download SpaCy model"; exit 1; }
 
-# Download SpaCy models
-python -m spacy download en_core_web_sm
-python -m spacy download en_coreference_web_trf
-
-# Clone Riveter repository
+# Clone and install Riveter
 if [ ! -d "$REPO_DIR" ]; then
-    git clone $REPO_URL
+    git clone "$REPO_URL" || { echo "Failed to clone Riveter repository"; exit 1; }
     echo "Cloned Riveter repository"
 fi
+cd "$REPO_DIR" || { echo "Failed to access Riveter repository"; exit 1; }
+pip install . || { echo "Failed to install Riveter"; exit 1; }
 
-cd $REPO_DIR
+# Create test script
+cat <<EOF > "../$TEST_SCRIPT"
+import spacy
 
-# Install Riveter package
-pip install . || pip install --use-feature=2020-resolver .
-
-# Verify Riveter installation
-echo "Verifying Riveter installation..."
-TEST_SCRIPT="../test_riveter.py"
-cat <<EOF > $TEST_SCRIPT
-import riveter
-import spacy_experimental
-
-# Basic test to ensure the module imports and functions
-print("Riveter and spacy_experimental imported successfully!")
-
-# Additional functionality test
-nlp = spacy_experimental.load("en_core_web_sm")
-print("Loaded SpaCy model: en_core_web_sm")
-
-nlp_coref = spacy_experimental.load("en_coreference_web_trf")
-print("Loaded coreference model: en_coreference_web_trf")
-
-sample_text = "Elizabeth Bennet is speaking. She said hello."
-result = riveter.analyze_texts([sample_text])
-print(result)
+try:
+    import neuralcoref
+    nlp = spacy.load("en_core_web_sm")
+    neuralcoref.add_to_pipe(nlp)
+    doc = nlp("My sister has a dog. She loves him.")
+    print("Coreferences:", doc._.coref_clusters)
+except Exception as e:
+    print(f"Test script error: {e}")
+    raise
 EOF
 
-if python $TEST_SCRIPT; then
-    echo "Riveter installation and test successful!"
+# Run test script
+echo "Running test script..."
+python "../$TEST_SCRIPT" || echo "Test script execution failed."
+
+# Check for errors in the log
+echo "Checking for errors in the log..."
+if [ -f "$LOG_FILE" ]; then
+    grep -B 5 -A 5 -i "error" "$LOG_FILE" || echo "No errors detected."
 else
-    echo "Riveter test failed. Check logs for details."
-    exit 1
+    echo "Log file not found."
 fi
 
 echo "Installation process completed."
